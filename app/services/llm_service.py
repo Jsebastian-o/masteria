@@ -29,6 +29,6 @@ def get_estimation(translation: str) -> str:
         max_tokens=2048,
         system=build_context(),
         messages=[{"role": "user", "content": translation}],
-        model="claude-haiku-4-5",
+        model=os.environ.get("LLM_MODEL"),
     )
     return message.content[0].text
