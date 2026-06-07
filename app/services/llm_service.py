@@ -1,4 +1,6 @@
+import json
 import os
+from collections.abc import Generator
 from anthropic import Anthropic
 from ..context.examples import EXAMPLES
 
@@ -24,11 +26,38 @@ def build_context() -> str:
     )
 
 
-def get_estimation(translation: str) -> str:
+def stream_estimation(translation: str) -> Generator[str, None, None]:
+    system_prompt = build_context()
+    with client.messages.stream(
+        max_tokens=2048,
+        system=system_prompt,
+        messages=[{"role": "user", "content": translation}],
+        model=os.environ.get("LLM_MODEL"),
+    ) as stream:
+        for text in stream.text_stream:
+            yield text
+        final = stream.get_final_message()
+        meta = {
+            "model": final.model,
+            "input_tokens": final.usage.input_tokens,
+            "output_tokens": final.usage.output_tokens,
+            "system_prompt": system_prompt,
+        }
+        yield f"\x00{json.dumps(meta)}"
+
+
+def get_estimation(translation: str) -> dict:
+    system_prompt = build_context()
     message = client.messages.create(
         max_tokens=2048,
-        system=build_context(),
+        system=system_prompt,
         messages=[{"role": "user", "content": translation}],
         model=os.environ.get("LLM_MODEL"),
     )
-    return message.content[0].text
+    return {
+        "estimation": message.content[0].text,
+        "model": message.model,
+        "input_tokens": message.usage.input_tokens,
+        "output_tokens": message.usage.output_tokens,
+        "system_prompt": system_prompt,
+    }
