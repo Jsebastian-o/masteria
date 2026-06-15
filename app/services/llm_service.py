@@ -3,6 +3,7 @@ import os
 from collections.abc import Generator
 from anthropic import Anthropic
 from ..context.examples import EXAMPLES
+from ..schemas import EstimationRequest
 
 client = Anthropic(
     api_key=os.environ.get("ANTHROPIC_API_KEY"),
@@ -17,21 +18,30 @@ def build_context() -> str:
         examples_text += f"Estimation:\n{example['estimation'].strip()}\n"
 
     return (
-        "You're an expert estimating software projects based on previous examples "
-        "and a translation from the client meeting. "
+        "You're an expert estimating software projects based on previous examples. "
         "Use the following real examples as reference to calibrate your estimates:\n"
         f"{examples_text}\n---\n"
-        "When given a new meeting summary, produce a detailed estimation in the same "
-        "structured format shown above, in English."
+        "When given a new project description, produce an estimation in English "
+        "following the format and detail level specified by the user."
     )
 
 
-def stream_estimation(translation: str) -> Generator[str, None, None]:
+def build_user_message(request: EstimationRequest) -> str:
+    return (
+        f"Project type: {request.project_type.value}\n"
+        f"Detail level: {request.detail_level.value}\n"
+        f"Output format: {request.output_format.value}\n\n"
+        f"Description:\n{request.description}"
+    )
+
+
+def stream_estimation(request: EstimationRequest) -> Generator[str, None, None]:
     system_prompt = build_context()
+    user_message = build_user_message(request)
     with client.messages.stream(
         max_tokens=2048,
         system=system_prompt,
-        messages=[{"role": "user", "content": translation}],
+        messages=[{"role": "user", "content": user_message}],
         model=os.environ.get("LLM_MODEL"),
     ) as stream:
         for text in stream.text_stream:
@@ -44,20 +54,3 @@ def stream_estimation(translation: str) -> Generator[str, None, None]:
             "system_prompt": system_prompt,
         }
         yield f"\x00{json.dumps(meta)}"
-
-
-def get_estimation(translation: str) -> dict:
-    system_prompt = build_context()
-    message = client.messages.create(
-        max_tokens=2048,
-        system=system_prompt,
-        messages=[{"role": "user", "content": translation}],
-        model=os.environ.get("LLM_MODEL"),
-    )
-    return {
-        "estimation": message.content[0].text,
-        "model": message.model,
-        "input_tokens": message.usage.input_tokens,
-        "output_tokens": message.usage.output_tokens,
-        "system_prompt": system_prompt,
-    }
