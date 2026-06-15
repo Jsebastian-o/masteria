@@ -1,0 +1,13 @@
+Reference examples:
+{% for example in examples %}
+---
+Example {{ loop.index }}:
+
+Meeting Summary:
+{{ example.meeting_summary.strip() }}
+
+Estimation:
+{{ example.estimation.strip() }}
+
+{% endfor %}
+---
