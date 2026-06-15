@@ -35,40 +35,50 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
+with st.form("my_form"):
+    st.write("Inside the form")
+    slider_val = st.slider("Form slider")
+    checkbox_val = st.checkbox("Form checkbox")
+
+    # Every form must have a submit button.
+    submitted = st.form_submit_button("Submit")
+    if submitted:
+        st.write("slider", slider_val, "checkbox", checkbox_val)
+
 # React to user input
-if prompt := st.chat_input("Copy client translation"):
-    st.chat_message("user").markdown(prompt)
-    st.session_state.messages.append({"role": "user", "content": prompt})
+# if prompt := st.chat_input("Copy client translation"):
+#     st.chat_message("user").markdown(prompt)
+#     st.session_state.messages.append({"role": "user", "content": prompt})
 
-    meta_out = {}
+#     meta_out = {}
 
-    def stream_gen():
-        t0 = time.time()
-        try:
-            with requests.post(API_STREAM_URL, json={"translation": prompt}, stream=True) as res:
-                res.raise_for_status()
-                pending = ""
-                for chunk in res.iter_content(chunk_size=None, decode_unicode=True):
-                    pending += chunk
-                    if "\x00" in pending:
-                        text_part, meta_json = pending.split("\x00", 1)
-                        if text_part:
-                            yield text_part
-                        meta_out.update(json.loads(meta_json))
-                        meta_out["response_time"] = time.time() - t0
-                        return
-                    else:
-                        yield pending
-                        pending = ""
-        except requests.exceptions.ConnectionError:
-            yield "Error: could not connect to the API. Make sure the server is running."
-        except Exception as e:
-            yield f"Error: {e}"
+#     def stream_gen():
+#         t0 = time.time()
+#         try:
+#             with requests.post(API_STREAM_URL, json={"translation": prompt}, stream=True) as res:
+#                 res.raise_for_status()
+#                 pending = ""
+#                 for chunk in res.iter_content(chunk_size=None, decode_unicode=True):
+#                     pending += chunk
+#                     if "\x00" in pending:
+#                         text_part, meta_json = pending.split("\x00", 1)
+#                         if text_part:
+#                             yield text_part
+#                         meta_out.update(json.loads(meta_json))
+#                         meta_out["response_time"] = time.time() - t0
+#                         return
+#                     else:
+#                         yield pending
+#                         pending = ""
+#         except requests.exceptions.ConnectionError:
+#             yield "Error: could not connect to the API. Make sure the server is running."
+#         except Exception as e:
+#             yield f"Error: {e}"
 
-    with st.chat_message("assistant"):
-        full_response = st.write_stream(stream_gen())
+#     with st.chat_message("assistant"):
+#         full_response = st.write_stream(stream_gen())
 
-    st.session_state.messages.append({"role": "assistant", "content": full_response})
-    if meta_out:
-        st.session_state.last_meta = meta_out
-    st.rerun()
+#     st.session_state.messages.append({"role": "assistant", "content": full_response})
+#     if meta_out:
+#         st.session_state.last_meta = meta_out
+#     st.rerun()
