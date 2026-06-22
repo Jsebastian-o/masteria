@@ -1,85 +1,124 @@
 import json
-import time
+
 import requests
 import streamlit as st
-from app.schemas import DetailLevel, EstimationRequest, OutputFormat, ProjectType
 
-API_STREAM_URL = "http://localhost:8000/api/v1/estimate/stream"
+API_BASE = "http://localhost:8000"
 
-st.title("Estimator")
+st.set_page_config(page_title="CAG Estimator", layout="wide")
 
-if "messages" not in st.session_state:
+
+# ---------------------------------------------------------------------------
+# Session management
+# ---------------------------------------------------------------------------
+
+def _create_server_session() -> str:
+    res = requests.post(f"{API_BASE}/api/v1/sessions", timeout=10)
+    res.raise_for_status()
+    return res.json()["session_id"]
+
+
+def reset_state() -> None:
+    st.session_state.session_id = _create_server_session()
     st.session_state.messages = []
-if "last_meta" not in st.session_state:
-    st.session_state.last_meta = None
+    st.session_state.project_metadata = {}
+    st.session_state.turn_count = 0
 
-# Sidebar
+
+if "session_id" not in st.session_state:
+    try:
+        reset_state()
+    except Exception as exc:
+        st.error(f"No se pudo iniciar sesión con la API: {exc}")
+        st.stop()
+
+
+# ---------------------------------------------------------------------------
+# Sidebar — session info + metadata panel
+# ---------------------------------------------------------------------------
+
 with st.sidebar:
-    st.header("Last call info")
+    st.title("Sesión activa")
+    st.caption(f"ID: `{st.session_state.session_id[:8]}…`")
+    st.caption(f"Turnos en ventana: **{st.session_state.turn_count}**")
 
-    if st.session_state.last_meta:
-        meta = st.session_state.last_meta
-        st.subheader("Metrics")
-        st.metric("Model", meta["model"])
-        col1, col2 = st.columns(2)
-        col1.metric("Input tokens", meta["input_tokens"])
-        col2.metric("Output tokens", meta["output_tokens"])
-        st.metric("Response time", f"{meta['response_time']:.2f} s")
+    if st.button("Nueva conversación", use_container_width=True):
+        try:
+            reset_state()
+        except Exception as exc:
+            st.error(f"Error al crear sesión: {exc}")
+        st.rerun()
 
-        st.subheader("System prompt")
-        st.text_area("", value=meta["system_prompt"], height=400, disabled=True, label_visibility="collapsed")
+    st.divider()
+
+    # --- Project metadata panel ---
+    st.subheader("Project Metadata")
+    meta: dict = st.session_state.project_metadata
+
+    if meta:
+        if meta.get("project_name"):
+            st.metric("Proyecto", meta["project_name"])
+        if meta.get("assumed_team_size"):
+            st.metric("Tamaño de equipo", meta["assumed_team_size"])
+        if meta.get("mentioned_technologies"):
+            st.write("**Tecnologías detectadas**")
+            st.write(" · ".join(meta["mentioned_technologies"]))
+        if meta.get("agreed_scope"):
+            st.write("**Alcance acordado**")
+            st.write(meta["agreed_scope"])
     else:
-        st.info("Submit a translation to see call details here.")
+        st.info("Sin metadatos aún. Envía la primera transcripción para que el modelo los extraiga.")
 
-# Display chat history
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+    with st.expander("JSON completo"):
+        st.json(meta or {})
 
-with st.form("estimation_form", clear_on_submit=True):
-    description = st.text_area(
-        "Project description",
-        max_chars=2000,
-        help="Describe the project (20–2000 characters).",
-    )
-    project_type = st.selectbox(
-        "Project type",
-        options=list(ProjectType),
-        format_func=lambda x: x.value.replace("_", " ").title(),
-    )
-    detail_level = st.selectbox(
-        "Detail level",
-        options=list(DetailLevel),
-        format_func=lambda x: x.value.title(),
-    )
-    output_format = st.selectbox(
-        "Output format",
-        options=list(OutputFormat),
-        format_func=lambda x: x.value.replace("_", " ").title(),
-    )
 
-    submitted = st.form_submit_button("Estimate")
+# ---------------------------------------------------------------------------
+# Main area — chat history + input form
+# ---------------------------------------------------------------------------
+
+st.title("CAG Estimator")
+
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+
+with st.form("estimate_form", clear_on_submit=True):
+    transcript = st.text_area(
+        "Transcripción de la reunión",
+        placeholder="Pega aquí el texto de la reunión o call de requisitos…",
+        height=220,
+    )
+    attachments = st.file_uploader(
+        "Documentación adjunta (opcional)",
+        accept_multiple_files=True,
+        type=["pdf", "txt", "md", "png", "jpg", "jpeg", "webp"],
+        help="PDFs, imágenes o documentos de texto complementarios.",
+    )
+    submitted = st.form_submit_button("Estimar", type="primary", use_container_width=True)
 
 if submitted:
-    if len(description) < 20:
-        st.warning("Description must be at least 20 characters.")
+    if not transcript.strip():
+        st.warning("La transcripción no puede estar vacía.")
     else:
-        request = EstimationRequest(
-            description=description,
-            project_type=project_type,
-            detail_level=detail_level,
-            output_format=output_format,
-        )
-        payload = request.model_dump()
-        st.chat_message("user").markdown(description)
-        st.session_state.messages.append({"role": "user", "content": description})
+        # Always send multipart so FastAPI receives both Form + File fields.
+        # Encoding transcript as a nameless file part keeps the Content-Type
+        # as multipart/form-data even when there are no actual attachments.
+        multipart: list[tuple] = [("transcript", (None, transcript.encode(), "text/plain"))]
+        for f in attachments or []:
+            multipart.append(
+                ("attachments", (f.name, f.getvalue(), f.type or "application/octet-stream"))
+            )
 
-        meta_out = {}
+        st.session_state.messages.append({"role": "user", "content": transcript})
+        st.chat_message("user").markdown(transcript)
+
+        extracted_meta: dict = {}
 
         def stream_gen():
-            t0 = time.time()
+            url = f"{API_BASE}/api/v1/sessions/{st.session_state.session_id}/estimate"
             try:
-                with requests.post(API_STREAM_URL, json=payload, stream=True) as res:
+                with requests.post(url, files=multipart, stream=True, timeout=180) as res:
                     res.raise_for_status()
                     pending = ""
                     for chunk in res.iter_content(chunk_size=None, decode_unicode=True):
@@ -88,21 +127,23 @@ if submitted:
                             text_part, meta_json = pending.split("\x00", 1)
                             if text_part:
                                 yield text_part
-                            meta_out.update(json.loads(meta_json))
-                            meta_out["response_time"] = time.time() - t0
+                            extracted_meta.update(json.loads(meta_json))
                             return
                         else:
                             yield pending
                             pending = ""
             except requests.exceptions.ConnectionError:
-                yield "Error: could not connect to the API. Make sure the server is running."
+                yield "**Error:** no se pudo conectar con la API. Asegúrate de que el servidor está en marcha."
+            except requests.exceptions.HTTPError as e:
+                yield f"**Error {e.response.status_code}:** {e.response.text}"
             except Exception as e:
-                yield f"Error: {e}"
+                yield f"**Error inesperado:** {e}"
 
         with st.chat_message("assistant"):
             full_response = st.write_stream(stream_gen())
 
         st.session_state.messages.append({"role": "assistant", "content": full_response})
-        if meta_out:
-            st.session_state.last_meta = meta_out
+        if extracted_meta:
+            st.session_state.project_metadata = extracted_meta
+        st.session_state.turn_count += 1
         st.rerun()
